@@ -23,10 +23,12 @@ export function StockEditor({ slug, rows }: { slug: string; rows: StockEditorRow
       const res = await action();
       if (res.ok) {
         setStatus({ tone: "success", message: done });
-        router.refresh();
       } else {
         setStatus({ tone: "error", message: res.message ?? "That didn't work." });
       }
+      // Refresh on conflicts too, so rows pick up the current quantity (the
+      // `expected` for the next compare-and-set save).
+      router.refresh();
     } catch {
       setStatus({ tone: "error", message: "We couldn't reach the server. Try again." });
     }
