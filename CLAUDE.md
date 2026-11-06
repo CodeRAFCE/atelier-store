@@ -4,7 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-Initial scaffold for an eCommerce app. Only wiring exists: no schemas, UI, auth flows, payments or tests yet.
+eCommerce app in early development. A static homepage exists, driven by placeholder data in `src/lib/sample-data.ts` (Unsplash images, allowed via `images.remotePatterns` in `next.config.ts`). No schemas, auth flows, payments or tests yet.
+
+## Design system
+
+All tokens and reusable classes live in `src/app/globals.css` as Tailwind v4 `@theme` tokens and `@utility` classes. Use them instead of ad-hoc values:
+- Layout: `container-site`, `container-content`, `container-prose`, `section`, `stack`, `grid-products`, `grid-split`
+- Media frames: `media-hero`, `media-portrait`, `media-product` (set the ratio only; add `object-cover` or `object-contain` to the `next/image` `fill` image)
+- Type: `text-label`, `text-display`, `text-product`
+- Links: `link`, `link-reveal`
+- Buttons: `btn` plus `btn-primary`, `btn-secondary`, `btn-inverse`, `btn-outline-inverse`, `btn-ghost` or `btn-icon`
+- Borders and forms: `hairline*`, `field`
+
+The palette is reset to monochrome tokens (`background`, `foreground`, `surface`, `muted`, `border` etc.), so Tailwind's default colours (zinc, gray, …) don't exist. Border radii are reset too, so corners are square. The site is light-only.
 
 ## Commands
 
@@ -13,6 +25,22 @@ Initial scaffold for an eCommerce app. Only wiring exists: no schemas, UI, auth 
 - `npm run typecheck` — `tsc --noEmit`
 - `npm run db:generate` / `db:migrate` / `db:push` / `db:studio` — drizzle-kit (migrations output to `./drizzle`)
 - No test runner is configured.
+
+## Dev server rule
+
+Whenever you start the dev server (`npm run dev`, e.g. to verify UI in a browser), you must kill its process when you're done, before ending your turn. Never leave it running in the background.
+
+`npm` doesn't forward termination to the Next.js child process, so killing the npm wrapper isn't enough. Kill whatever is listening on the port (default 3000), from PowerShell:
+
+```powershell
+Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -Confirm:$false }
+```
+
+Then confirm the port is free. That command should return nothing:
+
+```powershell
+Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
+```
 
 ## Setup
 
