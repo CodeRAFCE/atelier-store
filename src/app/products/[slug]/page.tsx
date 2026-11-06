@@ -93,7 +93,7 @@ async function ProductDetail({ params }: Pick<PageProps<"/products/[slug]">, "pa
             </header>
 
             <ProductPurchase
-              productName={product.name}
+              slug={product.id}
               stock={product.stock}
               sizes={product.sizes}
             />

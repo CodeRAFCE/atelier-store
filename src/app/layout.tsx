@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, Cormorant_Garamond } from "next/font/google";
+import { Suspense } from "react";
+import { BagLink, CartCount } from "@/components/cart/cart-count";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { brand } from "@/lib/site-content";
@@ -35,7 +37,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <div className="bg-foreground py-2.5 text-center text-background">
           <p className="text-label px-gutter">Complimentary shipping &amp; returns</p>
         </div>
-        <SiteHeader />
+        <SiteHeader
+          bag={
+            <Suspense fallback={<BagLink />}>
+              <CartCount />
+            </Suspense>
+          }
+        />
         <main className="flex-1">{children}</main>
         <SiteFooter />
       </body>

@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { brand, navigation } from "@/lib/site-content";
-import { BagIcon, CloseIcon, MenuIcon, SearchIcon, UserIcon } from "./icons";
+import { CloseIcon, MenuIcon, SearchIcon, UserIcon } from "./icons";
 
-export function SiteHeader() {
+/** `bag` is the server-rendered bag link (it reads the cart cookie). */
+export function SiteHeader({ bag }: { bag: ReactNode }) {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -56,9 +57,7 @@ export function SiteHeader() {
           <Link href="/account" className="btn-icon hidden sm:inline-flex" aria-label="Account">
             <UserIcon />
           </Link>
-          <a href="#" className="btn-icon -mr-3 relative" aria-label="Shopping bag, 0 items">
-            <BagIcon />
-          </a>
+          {bag}
         </div>
       </div>
 
@@ -117,9 +116,10 @@ export function SiteHeader() {
             ))}
           </ul>
           <div className="stack gap-3 px-gutter pb-8">
-            <a href="#" className="btn btn-secondary btn-block">
-              Sign in
-            </a>
+            {/* Signed-out visitors are redirected to sign-in by the proxy. */}
+            <Link href="/account" className="btn btn-secondary btn-block" onClick={() => setOpen(false)}>
+              My account
+            </Link>
             <a href="#" className="text-label link self-start">
               Client services
             </a>

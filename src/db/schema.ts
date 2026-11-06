@@ -9,7 +9,10 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
+  uuid,
 } from "drizzle-orm/pg-core";
+import { user } from "./auth-schema";
 
 export type ImageRef = { src: string; alt: string };
 
@@ -80,6 +83,163 @@ export const productStock = pgTable(
     check("product_stock_quantity_nonnegative", sql`${t.quantity} >= 0`),
   ],
 );
+
+export const ORDER_STATUSES = [
+  "pending",
+  "confirmed",
+  "canceled",
+  "expired",
+  "needs_review",
+] as const;
+export type OrderStatus = (typeof ORDER_STATUSES)[number];
+
+export const PAYMENT_STATUSES = ["unpaid", "paid", "failed", "refunded"] as const;
+export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
+
+export type ShippingAddress = {
+  name: string | null;
+  line1: string | null;
+  line2: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  country: string | null;
+};
+
+const sqlList = (values: readonly string[]) =>
+  sql.raw(values.map((v) => `'${v}'`).join(", "));
+
+/**
+ * One checkout attempt. Created `pending` with stock reserved; `status` is our
+ * order lifecycle, `payment_status` mirrors what Stripe reports and is only
+ * ever set from a verified Stripe event or a server-side Stripe retrieve.
+ * Money is integer cents, copied from the database at creation time.
+ */
+export const orders = pgTable(
+  "orders",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "restrict" }),
+    /** Customer email at purchase time. */
+    email: text("email").notNull(),
+    status: text("status").notNull().default("pending"),
+    paymentStatus: text("payment_status").notNull().default("unpaid"),
+    currency: text("currency").notNull().default("usd"),
+    subtotalCents: integer("subtotal_cents").notNull(),
+    shippingCents: integer("shipping_cents").notNull().default(0),
+    taxCents: integer("tax_cents").notNull().default(0),
+    totalCents: integer("total_cents").notNull(),
+    /** Stripe Checkout Session id (`cs_…`); set once the session is created. */
+    stripeCheckoutSessionId: text("stripe_checkout_session_id").unique(),
+    /** Stripe PaymentIntent id (`pi_…`); set when payment is confirmed. */
+    stripePaymentIntentId: text("stripe_payment_intent_id").unique(),
+    shippingAddress: jsonb("shipping_address").$type<ShippingAddress>(),
+    /** When the stock reservation and Stripe session lapse. */
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    /** Set when reserved stock was returned (expired, canceled, failed). */
+    stockReleasedAt: timestamp("stock_released_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => [
+    index("orders_user_id_created_at_idx").on(t.userId, t.createdAt),
+    /** At most one open checkout per customer. */
+    uniqueIndex("orders_one_pending_per_user_idx")
+      .on(t.userId)
+      .where(sql`${t.status} = 'pending'`),
+    check("orders_status_valid", sql`${t.status} in (${sqlList(ORDER_STATUSES)})`),
+    check(
+      "orders_payment_status_valid",
+      sql`${t.paymentStatus} in (${sqlList(PAYMENT_STATUSES)})`,
+    ),
+    check(
+      "orders_amounts_nonnegative",
+      sql`${t.subtotalCents} >= 0 and ${t.shippingCents} >= 0 and ${t.taxCents} >= 0 and ${t.totalCents} >= 0`,
+    ),
+    check(
+      "orders_total_matches_parts",
+      sql`${t.totalCents} = ${t.subtotalCents} + ${t.shippingCents} + ${t.taxCents}`,
+    ),
+    check(
+      "orders_confirmed_requires_payment",
+      sql`${t.status} <> 'confirmed' or (${t.paymentStatus} = 'paid' and ${t.paidAt} is not null)`,
+    ),
+  ],
+);
+
+/**
+ * Snapshot of each purchased line. Name, size and price are copied so history
+ * survives catalogue edits; `product_id` keeps the link for stock release.
+ */
+export const orderItems = pgTable(
+  "order_items",
+  {
+    id: serial("id").primaryKey(),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    productId: integer("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "restrict" }),
+    productSlug: text("product_slug").notNull(),
+    name: text("name").notNull(),
+    /** Null for one-size items, matching `product_stock.size`. */
+    size: text("size"),
+    imageUrl: text("image_url"),
+    unitPriceCents: integer("unit_price_cents").notNull(),
+    quantity: integer("quantity").notNull(),
+    lineTotalCents: integer("line_total_cents").notNull(),
+  },
+  (t) => [
+    index("order_items_order_id_idx").on(t.orderId),
+    index("order_items_product_id_idx").on(t.productId),
+    unique("order_items_order_product_size_unique")
+      .on(t.orderId, t.productId, t.size)
+      .nullsNotDistinct(),
+    check("order_items_quantity_positive", sql`${t.quantity} > 0`),
+    check("order_items_unit_price_nonnegative", sql`${t.unitPriceCents} >= 0`),
+    check(
+      "order_items_line_total_matches",
+      sql`${t.lineTotalCents} = ${t.unitPriceCents} * ${t.quantity}`,
+    ),
+  ],
+);
+
+/**
+ * Stripe webhook events already applied. The primary key makes a replayed
+ * `evt_…` fail its insert, which is how duplicate deliveries are detected.
+ */
+export const stripeEvents = pgTable("stripe_events", {
+  id: text("id").primaryKey(),
+  type: text("type").notNull(),
+  orderId: uuid("order_id").references(() => orders.id, {
+    onDelete: "set null",
+  }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const ordersRelations = relations(orders, ({ one, many }) => ({
+  user: one(user, { fields: [orders.userId], references: [user.id] }),
+  items: many(orderItems),
+}));
+
+export const orderItemsRelations = relations(orderItems, ({ one }) => ({
+  order: one(orders, { fields: [orderItems.orderId], references: [orders.id] }),
+  product: one(products, {
+    fields: [orderItems.productId],
+    references: [products.id],
+  }),
+}));
 
 export const categoriesRelations = relations(categories, ({ many }) => ({
   products: many(products),

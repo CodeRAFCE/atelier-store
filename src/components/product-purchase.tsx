@@ -1,24 +1,28 @@
 "use client";
 
-import { useState } from "react";
+import Link from "next/link";
+import { useState, useTransition } from "react";
+import { addToCart } from "@/app/cart/actions";
+import type { CartActionResult } from "@/lib/cart";
 import { getStockState, type ProductSize } from "@/lib/catalog";
 import { HeartIcon } from "./icons";
 import { StockIndicator } from "./stock-indicator";
 
 type Props = {
-  productName: string;
+  slug: string;
   stock: number;
   sizes?: ProductSize[];
 };
 
 /**
- * Size selection, stock state and purchase actions.
- * UI only: the bag is not wired to a cart yet.
+ * Size selection, stock state and add to bag. The size check here is a UX
+ * nicety; addToCart re-validates the size and caps the quantity at live stock.
  */
-export function ProductPurchase({ productName, stock, sizes }: Props) {
+export function ProductPurchase({ slug, stock, sizes }: Props) {
   const [size, setSize] = useState<string | null>(null);
   const [error, setError] = useState(false);
-  const [added, setAdded] = useState(false);
+  const [result, setResult] = useState<CartActionResult | null>(null);
+  const [pending, startTransition] = useTransition();
 
   const selected = sizes?.find((s) => s.label === size);
   const state = getStockState(selected ? selected.stock : stock);
@@ -29,7 +33,14 @@ export function ProductPurchase({ productName, stock, sizes }: Props) {
       setError(true);
       return;
     }
-    setAdded(true);
+    setResult(null);
+    startTransition(async () => {
+      try {
+        setResult(await addToCart(slug, selected?.label ?? null, 1));
+      } catch {
+        setResult({ ok: false, message: "We couldn't update your bag. Please try again." });
+      }
+    });
   };
 
   return (
@@ -66,7 +77,7 @@ export function ProductPurchase({ productName, stock, sizes }: Props) {
                     onChange={() => {
                       setSize(s.label);
                       setError(false);
-                      setAdded(false);
+                      setResult(null);
                     }}
                     className="sr-only"
                     aria-label={unavailable ? `${s.label}, sold out` : s.label}
@@ -90,21 +101,30 @@ export function ProductPurchase({ productName, stock, sizes }: Props) {
         <button
           type="button"
           className="btn btn-primary btn-block"
-          disabled={soldOut || state.status === "sold_out"}
+          disabled={soldOut || state.status === "sold_out" || pending}
+          aria-busy={pending}
           onClick={addToBag}
         >
-          {soldOut ? "Sold out" : "Add to bag"}
+          {soldOut ? "Sold out" : pending ? "Adding…" : "Add to bag"}
         </button>
         <button type="button" className="btn btn-secondary btn-block">
           <HeartIcon width={16} height={16} />
           Save to wishlist
         </button>
-        {added && (
-          <p className="text-sm text-muted" role="status">
-            {productName}
-            {selected ? `, size ${selected.label},` : ""} added to your bag.
-          </p>
-        )}
+        <p
+          className={`text-sm ${result && !result.ok ? "text-error" : "text-muted"}`}
+          role="status"
+        >
+          {result?.message}
+          {result?.ok && (
+            <>
+              {" "}
+              <Link href="/cart" className="link text-foreground">
+                View bag
+              </Link>
+            </>
+          )}
+        </p>
       </div>
     </div>
   );

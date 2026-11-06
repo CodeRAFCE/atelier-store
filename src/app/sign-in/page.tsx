@@ -7,5 +7,8 @@ export const metadata: Metadata = {
 };
 
 export default function SignInPage() {
-  return <AuthPage mode="sign-in" title="Welcome back" />;
+  return <AuthPage
+      mode="sign-in" title="Welcome back"
+      intro="Sign in to view your account."
+    />;
 }

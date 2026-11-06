@@ -50,6 +50,13 @@ export function getStockState(stock: number): StockState {
   return { status: "in_stock", label: "In stock" };
 }
 
+/** Exact amount from integer cents (orders), unlike `formatPrice`'s whole dollars. */
+export const formatCents = (cents: number, currency = "usd") =>
+  new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: currency.toUpperCase(),
+  }).format(cents / 100);
+
 export const formatPrice = (value: number) =>
   new Intl.NumberFormat("en-US", {
     style: "currency",
