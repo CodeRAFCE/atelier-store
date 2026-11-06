@@ -9,7 +9,9 @@ export function ProductCard({ product }: { product: Product }) {
   const stock = getStockState(product.stock);
   const soldOut = stock.status === "sold_out";
   const hoverImage = product.gallery[1];
-  const badge = soldOut ? stock.label : product.badge;
+  const lowStock = stock.status === "low_stock";
+  // Availability outranks the merchandising badge (e.g. "New").
+  const badge = soldOut || lowStock ? stock.label : product.badge;
 
   return (
     <article className="group relative">
@@ -32,7 +34,9 @@ export function ProductCard({ product }: { product: Product }) {
             />
           )}
           {badge && (
-            <span className="text-label absolute top-3 left-3 bg-background px-2 py-1">
+            <span
+              className={`text-label absolute top-3 left-3 bg-background px-2 py-1 ${lowStock ? "text-error" : ""}`}
+            >
               {badge}
             </span>
           )}

@@ -56,6 +56,7 @@ export function ProductPurchase({ slug, stock, sizes }: Props) {
           <div className="grid grid-cols-5 gap-1">
             {sizes.map((s) => {
               const unavailable = s.stock <= 0;
+              const low = getStockState(s.stock).status === "low_stock";
               const isSelected = s.label === size;
               return (
                 <label
@@ -80,9 +81,21 @@ export function ProductPurchase({ slug, stock, sizes }: Props) {
                       setResult(null);
                     }}
                     className="sr-only"
-                    aria-label={unavailable ? `${s.label}, sold out` : s.label}
+                    aria-label={
+                      unavailable
+                        ? `${s.label}, sold out`
+                        : low
+                          ? `${s.label}, only ${s.stock} left`
+                          : s.label
+                    }
                   />
                   {s.label}
+                  {low && !isSelected && (
+                    <span
+                      className="absolute top-1 right-1 size-1.5 rounded-full bg-error"
+                      aria-hidden="true"
+                    />
+                  )}
                 </label>
               );
             })}

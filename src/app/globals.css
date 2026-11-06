@@ -530,3 +530,45 @@
     border-bottom-color: var(--color-error);
   }
 }
+
+/* Multi-line input: boxed, since an underline doesn't frame several lines */
+@utility field-area {
+  width: 100%;
+  min-height: 7rem;
+  padding: 0.75rem;
+  background: transparent;
+  border: 1px solid var(--color-subtle);
+  border-radius: 0;
+  font-size: var(--text-base);
+  color: var(--color-foreground);
+  transition: border-color var(--duration-base) var(--ease-luxe);
+  &:focus {
+    outline: none;
+    border-color: var(--color-foreground);
+  }
+  &[aria-invalid="true"] {
+    border-color: var(--color-error);
+  }
+}
+
+/* Native select styled to match `field` */
+@utility field-select {
+  width: 100%;
+  min-height: 3rem;
+  padding-inline: 0;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--color-subtle);
+  border-radius: 0;
+  font-size: var(--text-base);
+  color: var(--color-foreground);
+  cursor: pointer;
+  transition: border-color var(--duration-base) var(--ease-luxe);
+  &:focus {
+    outline: none;
+    border-bottom-color: var(--color-foreground);
+  }
+  &[aria-invalid="true"] {
+    border-bottom-color: var(--color-error);
+  }
+}

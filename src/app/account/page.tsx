@@ -73,7 +73,7 @@ function Detail({ label, value }: { label: string; value: string }) {
   return (
     <div className="stack gap-1">
       <dt className="text-label text-muted">{label}</dt>
-      <dd className="break-words">{value}</dd>
+      <dd className="wrap-break-word">{value}</dd>
     </div>
   );
 }

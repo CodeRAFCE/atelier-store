@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { Suspense } from "react";
+import { AdminHeader, adminLoading } from "@/components/admin/admin-header";
 import { requireAdmin } from "@/lib/session";
 
 export const metadata: Metadata = {
@@ -7,25 +9,38 @@ export const metadata: Metadata = {
   robots: { index: false },
 };
 
-// Every admin page must call requireAdmin() itself: a layout-level check
-// doesn't re-run on client navigation between sibling pages.
+const LINKS = [
+  { href: "/admin/products", label: "Products", note: "View, create and edit products." },
+  { href: "/admin/stock", label: "Stock", note: "Current stock per size, and updates." },
+  { href: "/admin/categories", label: "Categories", note: "Add, rename and remove categories." },
+  { href: "/admin/orders", label: "Orders", note: "Every order, newest first." },
+] as const;
+
 export default function AdminPage() {
   return (
-    <section className="container-content py-16 md:py-24">
-      <Suspense fallback={<p className="text-sm text-muted">Loading…</p>}>
-        <AdminHome />
-      </Suspense>
-    </section>
+    <Suspense fallback={adminLoading}>
+      <AdminHome />
+    </Suspense>
   );
 }
 
 async function AdminHome() {
   const admin = await requireAdmin("/admin");
   return (
-    <header className="stack gap-3 hairline-b pb-8">
-      <p className="text-label text-muted">Admin</p>
-      <h1 className="text-4xl md:text-5xl">Store admin</h1>
-      <p className="text-sm text-muted">Signed in as {admin.email}.</p>
-    </header>
+    <div className="stack gap-8">
+      <AdminHeader title="Store admin">
+        <p className="text-sm text-muted">Signed in as {admin.email}.</p>
+      </AdminHeader>
+      <ul className="hairline-t">
+        {LINKS.map((l) => (
+          <li key={l.href} className="hairline-b">
+            <Link href={l.href} className="flex flex-wrap items-baseline justify-between gap-2 py-5">
+              <span className="text-lg">{l.label}</span>
+              <span className="text-sm text-muted">{l.note}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
