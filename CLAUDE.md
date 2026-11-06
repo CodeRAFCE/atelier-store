@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-eCommerce app in early development. The homepage and product pages read products, categories and per-size stock from Postgres (seeded with Unsplash-image placeholder data, allowed via `images.remotePatterns` in `next.config.ts`). Non-catalogue content (brand, navigation, hero, collections, editorial, footer) is static in `src/lib/site-content.ts`. No carts, orders, payments, auth flows or tests yet.
+eCommerce app in early development. The homepage and product pages read products, categories and per-size stock from Postgres (seeded with Unsplash-image placeholder data, allowed via `images.remotePatterns` in `next.config.ts`). Non-catalogue content (brand, navigation, hero, collections, editorial, footer) is static in `src/lib/site-content.ts`. Email/password auth (sign up/in/out, `/account`, admin-only `/admin`) is in place. No carts, orders, payments or tests yet.
 
 ## Design system
 
@@ -25,6 +25,7 @@ The palette is reset to monochrome tokens (`background`, `foreground`, `surface`
 - `npm run typecheck` — `tsc --noEmit`
 - `npm run db:generate` / `db:migrate` / `db:push` / `db:studio` — drizzle-kit (migrations output to `./drizzle`)
 - `npm run db:seed` — replaces the catalogue with `src/db/seed-data.ts` (runs via `tsx`)
+- `npm run auth:set-role -- <email> <customer|admin>` — the only way to grant or revoke admin
 - No test runner is configured.
 
 ## Dev server rule
@@ -52,12 +53,16 @@ Copy `.env.example` to `.env.local` and set `DATABASE_URL` (Neon), `BETTER_AUTH_
 - Next.js App Router with `src/` and the `@/*` → `src/*` alias. Tailwind v4.
 - **Next.js version warning:** `AGENTS.md` says this Next.js version has breaking changes from what you may know. Read the relevant guide in `node_modules/next/dist/docs/` before writing Next code.
 - **DB:** `src/db/index.ts` exports `db`, Drizzle over Neon's serverless HTTP driver (`drizzle-orm/neon-http`). Tables go in `src/db/schema.ts`, which `drizzle.config.ts` reads. That config loads `.env.local` and then `.env`. See Database conventions below.
-- **Auth:** `src/lib/auth.ts` (server, Better Auth with the Drizzle `pg` adapter, email/password enabled) is exposed via `src/app/api/auth/[...all]/route.ts`. `src/lib/auth-client.ts` is the React client.
-- Better Auth's tables are not yet in `schema.ts`. Generate them with `npx @better-auth/cli generate`, add them to the schema, then run the `db:*` migration scripts.
+- **Auth:** `src/lib/auth.ts` (server, Better Auth with the Drizzle `pg` adapter, email/password, 7-day sessions, no cookie cache) is exposed via `src/app/api/auth/[...all]/route.ts`. `src/lib/auth-client.ts` is the React client (sign-in/up/out run client-side). Out of scope until asked: social login, password reset, 2FA, email verification, the Better Auth `admin` plugin.
+  - **Roles:** `user.role` is a Better Auth additional field (`"customer"` default, `"admin"`) with `input: false`, so the API can't set it; use `auth:set-role`.
+  - **Server checks:** use `getSession` / `requireUser(next)` / `requireAdmin()` from `src/lib/session.ts` (server only). They read headers, so render callers behind `<Suspense>`, and never put them in `"use cache"`. Call them in every protected page (not just a layout), Server Action and Route Handler. Non-admins get `notFound()`.
+  - **`src/proxy.ts`** (Next 16's renamed middleware) only redirects on cookie *presence* for `/account`, `/admin`, `/sign-in`, `/sign-up`. It is not an access check.
+  - Redirect targets from `?next=` must go through `safeNext()` (`src/lib/auth-redirect.ts`).
+  - Better Auth's origin check trusts `BETTER_AUTH_URL` only, so API calls from another port fail with `INVALID_ORIGIN`.
 
 ## Database conventions
 
-- **Scope:** the schema covers the catalogue only: `categories` 1─* `products` 1─* `product_stock`. Don't add carts, orders, payments, reviews, wishlists or product variants unless asked.
+- **Scope:** the schema covers the catalogue (`categories` 1─* `products` 1─* `product_stock`) and Better Auth's tables (`user`, `session`, `account`, `verification` in `src/db/auth-schema.ts`, re-exported from `schema.ts`; text ids, keep in step with the auth config). Don't add carts, orders, payments, reviews, wishlists or product variants unless asked.
 - **Stock:** one `product_stock` row per size, or a single row with `size = null` for one-size items. A stock row is not a variant (no SKU or price of its own). `quantity >= 0`, and a product's total stock is the sum of its rows.
 - **Money:** store integer cents (`price_cents`), never floats. Convert to dollars only in the query mapper.
 - **Images:** `products.images` is an ordered `jsonb` `ImageRef[]`; the first entry is the card image. Store full URLs, not ones computed at read time.

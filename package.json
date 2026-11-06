@@ -12,7 +12,8 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "typecheck": "tsc --noEmit",
-    "db:seed": "tsx --env-file=.env.local src/db/seed.ts"
+    "db:seed": "tsx --env-file=.env.local src/db/seed.ts",
+    "auth:set-role": "tsx --env-file=.env.local src/db/set-role.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.2.0",

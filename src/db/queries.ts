@@ -83,6 +83,37 @@ export async function getNewArrivals(limit = 12): Promise<Product[]> {
   return rows.map(toProduct);
 }
 
+/**
+ * Case-insensitive match on name, colour, description or category name, in
+ * merchandised order. Callers pass a trimmed, non-empty query.
+ */
+export async function searchProducts(query: string): Promise<Product[]> {
+  "use cache";
+  cacheLife("hours");
+  cacheTag("products", "categories");
+
+  // Escape LIKE wildcards so "%" or "_" in the query match literally.
+  const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+  const rows = await db.query.products.findMany({
+    where: (p, { ilike, inArray, or }) =>
+      or(
+        ilike(p.name, pattern),
+        ilike(p.color, pattern),
+        ilike(p.description, pattern),
+        inArray(
+          p.categoryId,
+          db
+            .select({ id: categories.id })
+            .from(categories)
+            .where(ilike(categories.name, pattern)),
+        ),
+      ),
+    with: withRelations,
+    orderBy: (p, { asc }) => [asc(p.sortOrder), asc(p.id)],
+  });
+  return rows.map(toProduct);
+}
+
 export async function getProductSlugs(): Promise<string[]> {
   "use cache";
   cacheLife("hours");

@@ -35,13 +35,9 @@ export function SiteHeader() {
           >
             <MenuIcon />
           </button>
-          <button
-            type="button"
-            className="btn-icon -ml-3 hidden lg:inline-flex"
-            aria-label="Search"
-          >
+          <Link href="/search" className="btn-icon -ml-3 hidden lg:inline-flex" aria-label="Search">
             <SearchIcon />
-          </button>
+          </Link>
         </div>
 
         {/* Center: wordmark */}
@@ -54,16 +50,12 @@ export function SiteHeader() {
 
         {/* Right: account + bag */}
         <div className="flex items-center justify-end">
-          <button
-            type="button"
-            className="btn-icon lg:hidden"
-            aria-label="Search"
-          >
+          <Link href="/search" className="btn-icon lg:hidden" aria-label="Search">
             <SearchIcon />
-          </button>
-          <a href="#" className="btn-icon hidden sm:inline-flex" aria-label="Account">
+          </Link>
+          <Link href="/account" className="btn-icon hidden sm:inline-flex" aria-label="Account">
             <UserIcon />
-          </a>
+          </Link>
           <a href="#" className="btn-icon -mr-3 relative" aria-label="Shopping bag, 0 items">
             <BagIcon />
           </a>

@@ -99,3 +99,5 @@ export const productStockRelations = relations(productStock, ({ one }) => ({
     references: [products.id],
   }),
 }));
+
+export * from "./auth-schema";
