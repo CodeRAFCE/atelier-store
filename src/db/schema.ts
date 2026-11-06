@@ -98,6 +98,7 @@ export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
 
 export type ShippingAddress = {
   name: string | null;
+  phone?: string | null;
   line1: string | null;
   line2: string | null;
   city: string | null;
@@ -111,9 +112,10 @@ const sqlList = (values: readonly string[]) =>
 
 /**
  * One checkout attempt. Created `pending` with stock reserved; `status` is our
- * order lifecycle, `payment_status` mirrors what Stripe reports and is only
- * ever set from a verified Stripe event or a server-side Stripe retrieve.
- * Money is integer cents, copied from the database at creation time.
+ * order lifecycle, `payment_status` mirrors what Razorpay reports and is only
+ * ever set from a verified signature or a server-side Razorpay fetch.
+ * Money is integer minor units (paise for INR), copied from the database at
+ * creation time.
  */
 export const orders = pgTable(
   "orders",
@@ -126,17 +128,19 @@ export const orders = pgTable(
     email: text("email").notNull(),
     status: text("status").notNull().default("pending"),
     paymentStatus: text("payment_status").notNull().default("unpaid"),
-    currency: text("currency").notNull().default("usd"),
+    currency: text("currency").notNull().default("inr"),
     subtotalCents: integer("subtotal_cents").notNull(),
     shippingCents: integer("shipping_cents").notNull().default(0),
     taxCents: integer("tax_cents").notNull().default(0),
     totalCents: integer("total_cents").notNull(),
-    /** Stripe Checkout Session id (`cs_…`); set once the session is created. */
-    stripeCheckoutSessionId: text("stripe_checkout_session_id").unique(),
-    /** Stripe PaymentIntent id (`pi_…`); set when payment is confirmed. */
-    stripePaymentIntentId: text("stripe_payment_intent_id").unique(),
+    /** Razorpay Order id (`order_…`); set once the Razorpay order is created. */
+    razorpayOrderId: text("razorpay_order_id").unique(),
+    /** Razorpay Payment id (`pay_…`) of the payment that settled this order. */
+    razorpayPaymentId: text("razorpay_payment_id").unique(),
+    /** Razorpay Refund id (`rfnd_…`) once a refund for this order is issued. */
+    razorpayRefundId: text("razorpay_refund_id").unique(),
     shippingAddress: jsonb("shipping_address").$type<ShippingAddress>(),
-    /** When the stock reservation and Stripe session lapse. */
+    /** When the stock reservation lapses; the sweeper releases it after this. */
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     paidAt: timestamp("paid_at", { withTimezone: true }),
     /** Set when reserved stock was returned (expired, canceled, failed). */
@@ -151,6 +155,8 @@ export const orders = pgTable(
   },
   (t) => [
     index("orders_user_id_created_at_idx").on(t.userId, t.createdAt),
+    /** The expiry sweeper scans pending orders by deadline. */
+    index("orders_status_expires_at_idx").on(t.status, t.expiresAt),
     /** At most one open checkout per customer. */
     uniqueIndex("orders_one_pending_per_user_idx")
       .on(t.userId)
@@ -214,10 +220,11 @@ export const orderItems = pgTable(
 );
 
 /**
- * Stripe webhook events already applied. The primary key makes a replayed
- * `evt_…` fail its insert, which is how duplicate deliveries are detected.
+ * Razorpay webhook deliveries already applied. The primary key is the
+ * `x-razorpay-event-id` header, so a replayed delivery fails its insert, which
+ * is how duplicates are detected.
  */
-export const stripeEvents = pgTable("stripe_events", {
+export const paymentEvents = pgTable("payment_events", {
   id: text("id").primaryKey(),
   type: text("type").notNull(),
   orderId: uuid("order_id").references(() => orders.id, {
@@ -227,6 +234,41 @@ export const stripeEvents = pgTable("stripe_events", {
     .notNull()
     .defaultNow(),
 });
+
+/**
+ * One row per Razorpay payment attempt on an order (`pay_…`). Written from the
+ * verified callback and from webhooks. A failed attempt is recorded here and
+ * does not release stock, because the customer can retry on the same order.
+ */
+export const payments = pgTable(
+  "payments",
+  {
+    id: text("id").primaryKey(), // Razorpay payment id
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    status: text("status").notNull(), // created | authorized | captured | failed | refunded
+    amountCents: integer("amount_cents").notNull(),
+    currency: text("currency").notNull(),
+    method: text("method"),
+    errorCode: text("error_code"),
+    errorDescription: text("error_description"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => [
+    index("payments_order_id_idx").on(t.orderId),
+    check(
+      "payments_status_valid",
+      sql`${t.status} in ('created', 'authorized', 'captured', 'failed', 'refunded')`,
+    ),
+  ],
+);
 
 export const ordersRelations = relations(orders, ({ one, many }) => ({
   user: one(user, { fields: [orders.userId], references: [user.id] }),

@@ -32,23 +32,43 @@ async function OrderList() {
 
   return (
     <ul className="hairline-t">
-      {orders.map((order) => (
-        <li key={order.id} className="hairline-b">
-          <Link
-            href={`/account/orders/${order.id}`}
-            className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 py-5"
-          >
-            <span className="stack gap-1">
-              <span className="text-label">{describeOrder(order).label}</span>
-              <span className="text-sm text-muted">
-                {order.createdAt.toLocaleDateString("en-US", { dateStyle: "medium" })} ·{" "}
-                {order.items.reduce((n, i) => n + i.quantity, 0)} items
+      {orders.map((order) => {
+        const { label, tone } = describeOrder(order);
+        const itemCount = order.items.reduce((n, i) => n + i.quantity, 0);
+        const reference = `#${order.id.slice(0, 8).toUpperCase()}`;
+        return (
+          <li key={order.id} className="hairline-b">
+            <Link
+              href={`/account/orders/${order.id}`}
+              aria-label={`View order ${reference}, ${label}`}
+              className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 gap-y-4 py-5 sm:grid-cols-[minmax(0,1fr)_auto_auto]"
+            >
+              <span className="stack gap-2">
+                <span className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                  <span className="text-label">Order {reference}</span>
+                  <span className={`text-label ${STATUS_TEXT[tone]}`}>
+                    <span aria-hidden="true">● </span>
+                    {label}
+                  </span>
+                </span>
+                <span className="text-sm text-muted">
+                  <time dateTime={order.createdAt.toISOString()}>
+                    {order.createdAt.toLocaleDateString("en-US", { dateStyle: "medium" })}
+                  </time>{" "}
+                  · {itemCount} {itemCount === 1 ? "item" : "items"}
+                </span>
               </span>
-            </span>
-            <span>{formatCents(order.totalCents, order.currency)}</span>
-          </Link>
-        </li>
-      ))}
+
+              <span className="text-right">{formatCents(order.totalCents, order.currency)}</span>
+
+              <span className="text-label link-reveal col-span-2 sm:col-span-1">View order</span>
+            </Link>
+          </li>
+        );
+      })}
     </ul>
   );
 }
+
+const STATUS_TEXT = { success: "text-success", error: "text-error", info: "text-muted" } as const;
+

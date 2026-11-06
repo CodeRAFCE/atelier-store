@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
+import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
+import { OrderPending } from "@/components/account/order-pending";
 import { Notice } from "@/components/notice";
 import { getUserOrder } from "@/db/orders";
 import { formatCents } from "@/lib/catalog";
@@ -39,6 +41,8 @@ async function OrderDetail({ params }: { params: Promise<{ id: string }> }) {
 
   const { label, note, tone, next } = describeOrder(order);
   const money = (cents: number) => formatCents(cents, order.currency);
+  const confirmed = order.status === "confirmed";
+  const reference = `#${order.id.slice(0, 8).toUpperCase()}`;
 
   return (
     <div className="stack gap-10">
@@ -46,15 +50,23 @@ async function OrderDetail({ params }: { params: Promise<{ id: string }> }) {
         <Link href="/account/orders" className="text-label link self-start">
           All orders
         </Link>
-        <h1 className="text-4xl md:text-5xl">{label}</h1>
-        <Notice tone={tone}>{note}</Notice>
-        {next !== "none" && (
+        <p className="text-label text-muted">
+          Order {reference} · {order.createdAt.toLocaleDateString("en-US", { dateStyle: "medium" })}
+        </p>
+        <h1 className="text-4xl md:text-5xl">{confirmed ? "Thank you for your order" : label}</h1>
+        <Notice tone={tone} title={confirmed ? "Payment received" : undefined}>
+          {confirmed ? (
+            <>
+              A receipt is on its way to <span className="text-foreground">{order.email}</span>.
+              We&apos;ll let you know when your order ships.
+            </>
+          ) : (
+            note
+          )}
+        </Notice>
+        {next === "refresh" && <OrderPending />}
+        {next !== "none" && next !== "refresh" && (
           <div className="mt-2 flex flex-wrap gap-3">
-            {next === "refresh" && (
-              <Link href={`/account/orders/${order.id}`} prefetch={false} className="btn btn-primary">
-                Check again
-              </Link>
-            )}
             {next === "retry" && (
               <Link href="/cart" className="btn btn-primary">
                 Return to bag
@@ -71,13 +83,22 @@ async function OrderDetail({ params }: { params: Promise<{ id: string }> }) {
 
       <ul className="hairline-t">
         {order.items.map((item) => (
-          <li key={item.id} className="flex justify-between gap-6 py-4 hairline-b">
+          <li
+            key={item.id}
+            className="grid grid-cols-[4rem_minmax(0,1fr)_auto] items-center gap-4 py-4 hairline-b sm:grid-cols-[5rem_minmax(0,1fr)_auto] sm:gap-6"
+          >
+            <div className="media-product relative">
+              {item.imageUrl && (
+                <Image src={item.imageUrl} alt="" fill sizes="5rem" className="object-cover" />
+              )}
+            </div>
             <span className="stack gap-1">
               <Link href={`/products/${item.productSlug}`} className="link">
                 {item.name}
               </Link>
               <span className="text-sm text-muted">
-                {item.size ? `Size ${item.size} · ` : ""}Qty {item.quantity}
+                {item.size ? `Size ${item.size} · ` : ""}Qty {item.quantity} ·{" "}
+                {money(item.unitPriceCents)} each
               </span>
             </span>
             <span>{money(item.lineTotalCents)}</span>

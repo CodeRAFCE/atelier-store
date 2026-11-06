@@ -1,140 +1,195 @@
-// Checkout orchestration: ties the order tables (src/db/orders.ts) to Stripe.
-// Payment is only ever confirmed from a Checkout Session that this server got
-// from Stripe itself: a signature-verified webhook event, or a server-side
-// `sessions.retrieve`. Reaching a success URL proves nothing.
-import type Stripe from "stripe";
+// Checkout orchestration: ties the order tables (src/db/orders.ts) to Razorpay.
+// A payment is only ever confirmed from a Razorpay payment that this server
+// fetched itself, after either a verified `razorpay_signature` (client callback)
+// or a verified webhook. A browser claim alone proves nothing.
 import {
   createPendingOrder,
+  findExpiredPendingOrders,
   findOrderById,
-  findOrderBySession,
+  findOrderByRazorpayOrder,
+  findOrderByRazorpayOrderId,
   findOrderForUser,
   findPendingOrder,
   markOrderPaid,
   markOrderRefunded,
+  markRefundedByPayment,
+  recordPaymentEvent,
   releaseOrder,
-  setCheckoutSession,
+  setRazorpayOrder,
+  upsertPayment,
+  type EventRef,
   type PaidFacts,
+  type PaymentRecord,
 } from "@/db/orders";
 import type { CartItem } from "@/lib/cart";
-import { getStripe, siteUrl } from "./stripe";
+import { getKeyId, getRazorpay, verifyPaymentSignature } from "@/lib/razorpay";
+import type { ShippingAddress } from "@/db/schema";
 
-export type SessionOutcome =
+/** The subset of a Razorpay Payment entity we read. */
+export type RzpPayment = {
+  id: string;
+  order_id: string;
+  status: string;
+  amount: number; // paise
+  currency: string;
+  method?: string | null;
+  error_code?: string | null;
+  error_description?: string | null;
+};
+
+export type PaymentOutcome =
   | "confirmed"
   | "already_confirmed"
   | "duplicate"
   | "released"
   | "pending"
+  | "failed"
   | "review"
   | "refunded"
   | "ignored";
 
-type EventRef = { id: string; type: string };
+const PAYMENT_STATUSES = ["created", "authorized", "captured", "failed", "refunded"] as const;
 
-function factsFrom(session: Stripe.Checkout.Session): PaidFacts | null {
-  const orderId = session.metadata?.order_id ?? session.client_reference_id;
-  if (!orderId) return null;
-  const ship = session.collected_information?.shipping_details;
-  const intent = session.payment_intent;
+async function fetchPayment(paymentId: string): Promise<RzpPayment> {
+  return (await getRazorpay().payments.fetch(paymentId)) as unknown as RzpPayment;
+}
+
+function toRecord(orderId: string, p: RzpPayment): PaymentRecord {
+  const status = (PAYMENT_STATUSES as readonly string[]).includes(p.status)
+    ? (p.status as PaymentRecord["status"])
+    : "created";
   return {
+    id: p.id,
     orderId,
-    sessionId: session.id,
-    paymentIntentId: typeof intent === "string" ? intent : (intent?.id ?? null),
-    amountTotal: session.amount_total,
-    currency: session.currency,
-    shippingAddress: ship?.address
-      ? {
-          name: ship.name ?? null,
-          line1: ship.address.line1 ?? null,
-          line2: ship.address.line2 ?? null,
-          city: ship.address.city ?? null,
-          state: ship.address.state ?? null,
-          postalCode: ship.address.postal_code ?? null,
-          country: ship.address.country ?? null,
-        }
-      : null,
+    status,
+    amountCents: p.amount,
+    currency: p.currency.toLowerCase(),
+    method: p.method ?? null,
+    errorCode: p.error_code ?? null,
+    errorDescription: p.error_description ?? null,
   };
 }
 
-async function refundLatePayment(facts: PaidFacts) {
-  if (!facts.paymentIntentId) return;
-  await getStripe().refunds.create(
-    { payment_intent: facts.paymentIntentId },
-    { idempotencyKey: `refund-${facts.orderId}` },
-  );
-  await markOrderRefunded(facts.orderId);
+/** Refund the money for an order we can't honour (paid after release). */
+async function refundLatePayment(orderId: string, paymentId: string) {
+  // No amount given: a full refund of the captured payment.
+  const refund = await getRazorpay().payments.refund(paymentId, {
+    notes: { order_id: orderId, reason: "late_payment" },
+  });
+  const refundId = (refund as unknown as { id?: string }).id ?? null;
+  await markOrderRefunded(orderId, refundId);
 }
 
 /**
- * Applies what Stripe says about a Checkout Session to our order. Safe to call
- * repeatedly and from several places (webhook, return page): every transition
- * is guarded on the order still being `pending`.
+ * Refunds only an order that was paid after we had already released it
+ * (`stock_released_at` set), flagged `needs_review`, with this payment on it and
+ * no refund recorded yet. A genuine amount mismatch has no release timestamp, so
+ * it is never auto-refunded. Returns true if a refund was issued.
  */
-export async function applyCheckoutSession(
-  session: Stripe.Checkout.Session,
-  event?: EventRef,
-): Promise<SessionOutcome> {
-  const facts = factsFrom(session);
-  if (!facts) return "ignored";
+async function refundIfLate(orderId: string, paymentId: string): Promise<boolean> {
+  const o = await findOrderById(orderId);
+  if (
+    !o ||
+    o.status !== "needs_review" ||
+    o.paymentStatus !== "paid" ||
+    o.razorpayRefundId ||
+    !o.stockReleasedAt ||
+    o.razorpayPaymentId !== paymentId
+  ) {
+    return false;
+  }
+  await refundLatePayment(orderId, paymentId);
+  return true;
+}
 
-  if (session.payment_status === "paid") {
+/**
+ * Applies a Razorpay payment to our order. Safe to call repeatedly and from
+ * several places (callback, webhook, sweeper): every transition is guarded on
+ * the order still being `pending`.
+ */
+export async function applyPayment(
+  order: { id: string; razorpayOrderId: string | null },
+  payment: RzpPayment,
+  event?: EventRef,
+): Promise<PaymentOutcome> {
+  if (!order.razorpayOrderId || payment.order_id !== order.razorpayOrderId) return "ignored";
+
+  if (payment.status === "captured") {
+    await upsertPayment(toRecord(order.id, payment));
+    const facts: PaidFacts = {
+      orderId: order.id,
+      razorpayOrderId: order.razorpayOrderId,
+      paymentId: payment.id,
+      amount: payment.amount,
+      currency: payment.currency,
+    };
     const result = await markOrderPaid(facts, event);
-    if (result === "late_payment") {
-      await refundLatePayment(facts);
-      return "refunded";
-    }
-    if (result === "amount_mismatch") return "review";
     if (result === "unknown") return "ignored";
+    // The event row is committed together with the state change, so if the
+    // refund below fails and Razorpay retries, `markOrderPaid` answers
+    // "duplicate" or "amount_mismatch". Re-check the stored facts so a failed
+    // refund is retried instead of silently dropped.
+    if (result === "late_payment" || result === "duplicate" || result === "amount_mismatch") {
+      if (await refundIfLate(order.id, payment.id)) return "refunded";
+      if (result !== "duplicate") return "review"; // flagged needs_review, not refunded
+    }
     return result;
   }
 
-  if (session.status === "expired") {
-    const { released, duplicate } = await releaseOrder(facts.orderId, "expired", event);
-    return duplicate ? "duplicate" : released ? "released" : "ignored";
-  }
-
-  return "pending"; // open, or a delayed payment method still processing
+  // Not captured: record the attempt so it is visible, but don't touch stock.
+  await upsertPayment(toRecord(order.id, payment));
+  if (payment.status === "failed") return "failed";
+  return "pending"; // created / authorized: still in flight
 }
 
 /**
- * Closes a customer's open order: expires its Stripe session so it can't be
- * paid any more, then returns the reserved stock. If the session turns out to
- * be paid already, confirms the order instead.
+ * Closes a customer's open order: makes sure no captured payment is waiting on
+ * it, then returns the reserved stock. If a payment has settled, confirms the
+ * order instead. If one is still in flight, it does nothing and reports `failed`.
  */
 async function closeOpenOrder(
-  order: { id: string; stripeCheckoutSessionId: string | null },
+  order: { id: string; razorpayOrderId: string | null },
   reason: "expired" | "canceled",
 ): Promise<"closed" | "paid" | "failed"> {
-  const sessionId = order.stripeCheckoutSessionId;
-  if (sessionId) {
-    const stripe = getStripe();
-    let session: Stripe.Checkout.Session;
+  if (order.razorpayOrderId) {
+    let payments: RzpPayment[];
     try {
-      session = await stripe.checkout.sessions.expire(sessionId);
+      const res = await getRazorpay().orders.fetchPayments(order.razorpayOrderId);
+      payments = (res as unknown as { items: RzpPayment[] }).items ?? [];
     } catch {
-      session = await stripe.checkout.sessions.retrieve(sessionId); // already complete/expired
+      return "failed"; // can't tell whether money moved: don't release
     }
-    if (session.payment_status === "paid") {
-      await applyCheckoutSession(session);
+    const captured = payments.find((p) => p.status === "captured");
+    if (captured) {
+      await applyPayment(order, captured);
       return "paid";
     }
-    if (session.status !== "expired") return "failed";
+    if (payments.some((p) => p.status === "authorized")) return "failed";
   }
   await releaseOrder(order.id, reason);
   return "closed";
 }
 
 export type BeginCheckoutResult =
-  | { ok: true; url: string; orderId: string }
+  | {
+      ok: true;
+      orderId: string;
+      razorpayOrderId: string;
+      keyId: string;
+      amount: number;
+      currency: string;
+    }
   | { ok: false; message: string; redirectTo?: string };
 
 /**
- * Starts checkout for a signed-in customer from their cart cookie items.
- * Prices and totals come from Postgres inside `createPendingOrder`; Stripe is
- * only given the resulting order snapshot.
+ * Starts checkout for a signed-in customer. Prices and totals come from
+ * Postgres inside `createPendingOrder`; Razorpay is only given the resulting
+ * amount, which the browser never chooses.
  */
 export async function beginCheckout(
   user: { id: string; email: string },
   items: CartItem[],
+  address: ShippingAddress,
 ): Promise<BeginCheckoutResult> {
   // One open checkout per customer: close any earlier one first.
   const open = await findPendingOrder(user.id);
@@ -152,50 +207,39 @@ export async function beginCheckout(
     }
   }
 
-  const created = await createPendingOrder(user, items);
+  const created = await createPendingOrder(user, items, address);
   if (!created.ok) return { ok: false, message: created.message };
   const { order } = created;
 
-  const base = siteUrl();
-  let session: Stripe.Checkout.Session;
+  let razorpayOrderId: string;
+  let keyId: string;
   try {
-    session = await getStripe().checkout.sessions.create(
-      {
-        mode: "payment",
-        client_reference_id: order.id,
-        customer_email: user.email,
-        metadata: { order_id: order.id },
-        payment_intent_data: { metadata: { order_id: order.id } },
-        shipping_address_collection: { allowed_countries: ["US", "CA", "GB"] },
-        line_items: order.lines.map((l) => ({
-          quantity: l.quantity,
-          price_data: {
-            currency: order.currency,
-            unit_amount: l.unitPriceCents,
-            product_data: {
-              name: l.size ? `${l.name} (${l.size})` : l.name,
-              ...(l.imageUrl?.startsWith("https://") ? { images: [l.imageUrl] } : {}),
-            },
-          },
-        })),
-        expires_at: Math.floor(order.expiresAt.getTime() / 1000),
-        success_url: `${base}/checkout/return?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${base}/checkout/cancel?order=${order.id}`,
-      },
-      { idempotencyKey: `checkout-${order.id}` },
-    );
-    if (!session.url) throw new Error("Stripe returned a Checkout Session without a URL");
+    keyId = getKeyId();
+    const rzpOrder = await getRazorpay().orders.create({
+      amount: order.totalCents,
+      currency: order.currency.toUpperCase(),
+      receipt: order.id,
+      notes: { order_id: order.id },
+    });
+    razorpayOrderId = rzpOrder.id;
   } catch (err) {
-    console.error("Stripe Checkout Session creation failed", err);
+    console.error("Razorpay order creation failed", err);
     await releaseOrder(order.id, "expired");
     return { ok: false, message: "We couldn't start payment. Please try again." };
   }
 
-  await setCheckoutSession(order.id, session.id);
-  return { ok: true, url: session.url, orderId: order.id };
+  await setRazorpayOrder(order.id, razorpayOrderId);
+  return {
+    ok: true,
+    orderId: order.id,
+    razorpayOrderId,
+    keyId,
+    amount: order.totalCents,
+    currency: order.currency.toUpperCase(),
+  };
 }
 
-/** The customer backed out of Stripe Checkout: close their order, restock. */
+/** The customer closed the payment modal: close their order, restock. */
 export async function cancelCheckout(userId: string, orderId: string) {
   const order = await findOrderForUser(userId, orderId);
   if (!order || order.status !== "pending") return;
@@ -203,15 +247,81 @@ export async function cancelCheckout(userId: string, orderId: string) {
 }
 
 /**
- * Return from Stripe. Asks Stripe for the session's real state and applies it;
- * the `session_id` in the URL only says *which* session to look up.
+ * The client callback after the modal succeeds. Verifies the signature
+ * server-side, then fetches the payment from Razorpay and applies that, never
+ * the browser's word.
  */
-export async function confirmReturn(userId: string, sessionId: string) {
-  const order = await findOrderBySession(userId, sessionId);
-  if (!order) return null;
-  const session = await getStripe().checkout.sessions.retrieve(sessionId);
-  if ((session.metadata?.order_id ?? session.client_reference_id) === order.id) {
-    await applyCheckoutSession(session);
+export async function confirmPayment(
+  userId: string,
+  input: { razorpayOrderId: string; razorpayPaymentId: string; razorpaySignature: string },
+): Promise<{ orderId: string; outcome: PaymentOutcome } | null> {
+  if (
+    !verifyPaymentSignature(input.razorpayOrderId, input.razorpayPaymentId, input.razorpaySignature)
+  ) {
+    return null;
   }
-  return (await findOrderById(order.id)) ?? order;
+  const order = await findOrderByRazorpayOrder(userId, input.razorpayOrderId);
+  if (!order) return null;
+
+  const payment = await fetchPayment(input.razorpayPaymentId);
+  const outcome = await applyPayment(order, payment);
+  return { orderId: order.id, outcome };
+}
+
+/**
+ * Applies one verified webhook event. The caller has checked the signature and
+ * dedupe key. Returns "duplicate" for a replayed event; that is still a 200.
+ */
+export async function applyWebhookEvent(event: {
+  id: string;
+  type: string;
+  payload: Record<string, unknown>;
+}): Promise<PaymentOutcome> {
+  const ref = { id: event.id, type: event.type };
+  const payloadPayment = (event.payload.payment as { entity?: { id: string } } | undefined)
+    ?.entity;
+
+  switch (event.type) {
+    case "payment.captured":
+    case "order.paid": {
+      if (!payloadPayment) return "ignored";
+      // Re-fetch rather than trust the webhook snapshot.
+      const payment = await fetchPayment(payloadPayment.id);
+      const order = await findOrderByRazorpayOrderId(payment.order_id);
+      if (!order) return "ignored";
+      return applyPayment(order, payment, ref);
+    }
+    case "payment.failed": {
+      if (!payloadPayment) return "ignored";
+      const payment = await fetchPayment(payloadPayment.id);
+      const order = await findOrderByRazorpayOrderId(payment.order_id);
+      if (!order) return "ignored";
+      const res = await recordPaymentEvent(ref, order.id, toRecord(order.id, payment));
+      return res === "duplicate" ? "duplicate" : "failed"; // stock stays reserved for retry
+    }
+    case "refund.processed": {
+      const refund = (event.payload.refund as { entity?: { id: string; payment_id: string } } | undefined)
+        ?.entity;
+      if (!refund) return "ignored";
+      const res = await markRefundedByPayment(refund.payment_id, refund.id, ref);
+      return res === "duplicate" ? "duplicate" : "refunded";
+    }
+    default:
+      return "ignored";
+  }
+}
+
+/**
+ * Expiry sweeper: closes pending orders whose reservation has lapsed, and
+ * restocks them. Each one goes through `closeOpenOrder`, so a payment that
+ * landed in the meantime still wins.
+ */
+export async function expireStaleOrders(): Promise<{ checked: number; released: number }> {
+  const stale = await findExpiredPendingOrders();
+  let released = 0;
+  for (const order of stale) {
+    const outcome = await closeOpenOrder(order, "expired");
+    if (outcome === "closed") released++;
+  }
+  return { checked: stale.length, released };
 }

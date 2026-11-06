@@ -1,7 +1,7 @@
 export type OrderTone = "info" | "error" | "success";
 
 // Customer-facing wording for an order, derived only from what we stored from
-// Stripe-verified events, never from URL parameters. `next` picks the actions
+// Razorpay-verified payments and webhooks, never from URL parameters. `next` picks the actions
 // the order page offers.
 export function describeOrder(o: { status: string; paymentStatus: string }): {
   label: string;

@@ -19,7 +19,7 @@ export type SeedProduct = {
   slug: string;
   name: string;
   categorySlug: string;
-  /** Whole dollars. */
+  /** Whole rupees (stored as paise in the database). */
   price: number;
   color: string;
   badge?: string;

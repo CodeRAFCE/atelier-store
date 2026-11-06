@@ -4,7 +4,11 @@ import Image from "next/image";
 import Link from "next/link";
 import { useState, useTransition } from "react";
 import { removeFromCart, updateQuantity } from "@/app/cart/actions";
-import { MAX_QTY, type CartActionResult, type CartLine as Line } from "@/lib/cart";
+import {
+  MAX_QTY,
+  type CartActionResult,
+  type CartLine as Line,
+} from "@/lib/cart";
 import { formatPrice } from "@/lib/catalog";
 
 /**
@@ -26,15 +30,20 @@ export function CartLine({ line }: { line: Line }) {
         // and stock caps.
         if (!res.ok || res.message.startsWith("Only")) setResult(res);
       } catch {
-        setResult({ ok: false, message: "We couldn't update your bag. Please try again." });
+        setResult({
+          ok: false,
+          message: "We couldn't update your bag. Please try again.",
+        });
       }
     });
   };
 
-  const setQty = (qty: number) => run(() => updateQuantity(line.slug, line.size, qty));
+  const setQty = (qty: number) =>
+    run(() => updateQuantity(line.slug, line.size, qty));
   const remove = () => run(() => removeFromCart(line.slug, line.size));
 
-  const notice = result?.message ??
+  const notice =
+    result?.message ??
     (soldOut
       ? "Sold out. Remove it to continue."
       : line.adjusted
@@ -54,6 +63,7 @@ export function CartLine({ line }: { line: Line }) {
           alt={line.image.alt}
           fill
           sizes="8rem"
+          loading="eager"
           className={`object-cover ${soldOut ? "opacity-60" : ""}`}
         />
       </Link>
@@ -73,7 +83,11 @@ export function CartLine({ line }: { line: Line }) {
             <p className="text-sm text-muted">{formatPrice(line.unitPrice)}</p>
           </div>
           <p className="text-product">
-            {soldOut ? <span className="text-muted">—</span> : formatPrice(line.lineTotal)}
+            {soldOut ? (
+              <span className="text-muted">—</span>
+            ) : (
+              formatPrice(line.lineTotal)
+            )}
           </p>
         </div>
 

@@ -1,25 +1,31 @@
-// Order persistence for checkout. No Stripe or Next imports here, so every
+// Order persistence for checkout. No Razorpay or Next imports here, so every
 // function takes plain data: prices, stock and totals always come from the
-// database rows read below, never from the client or Stripe line items.
+// database rows read below, never from the client or Razorpay.
 //
 // neon-http has no interactive transactions. Multi-step changes are either
 // `db.batch` (atomic) or a single SQL statement with data-modifying CTEs, so a
 // stock change can never happen without its matching order change.
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import { MAX_QTY, type CartItem } from "@/lib/cart";
 import { db } from ".";
 import { availableFor, withStock } from "./cart";
 import {
   orderItems,
   orders,
+  paymentEvents,
+  payments,
   productStock,
   products,
   type ShippingAddress,
 } from "./schema";
 
-export const CHECKOUT_TTL_MS = 31 * 60 * 1000; // Stripe sessions live >= 30 min
+/**
+ * How long a customer's stock reservation lasts without payment. Razorpay
+ * orders don't expire on their own, so our sweeper enforces this.
+ */
+export const CHECKOUT_TTL_MS = 20 * 60 * 1000;
 
 /** True if `err` (or any `cause`) is the named Postgres constraint violation. */
 export function hasConstraint(err: unknown, name: string): boolean {
@@ -52,17 +58,20 @@ export type CreateOrderResult =
   | { ok: true; order: PendingOrder }
   | { ok: false; code: "empty" | "unavailable" | "sold_out" | "open_order"; message: string };
 
+export const CURRENCY = "inr";
+
 /**
  * Re-reads price and stock from Postgres, then in one atomic batch inserts the
- * order and its item snapshots and reserves the stock. Stock is decremented
- * unconditionally; the `product_stock_quantity_nonnegative` CHECK aborts the
- * whole batch if anything was sold meanwhile, so overselling is impossible.
- * Quantities are never clamped here: if the bag no longer fits, nothing is
- * created and the customer reviews the bag.
+ * order (with its shipping address), its item snapshots, and reserves the
+ * stock. Stock is decremented unconditionally; the
+ * `product_stock_quantity_nonnegative` CHECK aborts the whole batch if anything
+ * was sold meanwhile, so overselling is impossible. Quantities are never
+ * clamped here: if the bag no longer fits, nothing is created.
  */
 export async function createPendingOrder(
   user: { id: string; email: string },
   items: CartItem[],
+  shippingAddress: ShippingAddress,
 ): Promise<CreateOrderResult> {
   if (items.length === 0) {
     return { ok: false, code: "empty", message: "Your bag is empty." };
@@ -112,8 +121,10 @@ export async function createPendingOrder(
       id,
       userId: user.id,
       email: user.email,
+      currency: CURRENCY,
       subtotalCents,
       totalCents: subtotalCents,
+      shippingAddress,
       expiresAt,
     }),
     db.insert(orderItems).values(
@@ -162,13 +173,17 @@ export async function createPendingOrder(
     throw err;
   }
 
-  return { ok: true, order: { id, currency: "usd", totalCents: subtotalCents, expiresAt, lines } };
+  return {
+    ok: true,
+    order: { id, currency: CURRENCY, totalCents: subtotalCents, expiresAt, lines },
+  };
 }
 
-export async function setCheckoutSession(orderId: string, sessionId: string) {
+/** Stores the Razorpay Order id; only while the order is still pending. */
+export async function setRazorpayOrder(orderId: string, razorpayOrderId: string) {
   await db
     .update(orders)
-    .set({ stripeCheckoutSessionId: sessionId })
+    .set({ razorpayOrderId })
     .where(and(eq(orders.id, orderId), eq(orders.status, "pending")));
 }
 
@@ -184,17 +199,27 @@ export async function findOrderForUser(userId: string, orderId: string) {
   });
 }
 
-export async function findOrderBySession(userId: string, sessionId: string) {
+export async function findOrderByRazorpayOrder(userId: string, razorpayOrderId: string) {
   return db.query.orders.findFirst({
-    where: and(
-      eq(orders.userId, userId),
-      eq(orders.stripeCheckoutSessionId, sessionId),
-    ),
+    where: and(eq(orders.userId, userId), eq(orders.razorpayOrderId, razorpayOrderId)),
   });
 }
 
 export async function findOrderById(orderId: string) {
   return db.query.orders.findFirst({ where: eq(orders.id, orderId) });
+}
+
+/** Not user-scoped: only for verified webhook events, never for request input. */
+export async function findOrderByRazorpayOrderId(razorpayOrderId: string) {
+  return db.query.orders.findFirst({ where: eq(orders.razorpayOrderId, razorpayOrderId) });
+}
+
+/** Pending orders whose reservation has lapsed; used by the expiry sweeper. */
+export async function findExpiredPendingOrders(limit = 50) {
+  return db.query.orders.findMany({
+    where: and(eq(orders.status, "pending"), lt(orders.expiresAt, new Date())),
+    limit,
+  });
 }
 
 export async function listUserOrders(userId: string) {
@@ -212,37 +237,35 @@ export async function getUserOrder(userId: string, orderId: string) {
   });
 }
 
-type EventRef = { id: string; type: string } | undefined;
+/** A Razorpay webhook delivery (or any event we dedupe): id is the event id. */
+export type EventRef = { id: string; type: string } | undefined;
 
 const eventInsert = (orderId: string, event: EventRef) =>
   event
-    ? sql`, ev AS (INSERT INTO stripe_events (id, type, order_id) VALUES (${event.id}, ${event.type}, ${orderId}::uuid))`
+    ? sql`, ev AS (INSERT INTO payment_events (id, type, order_id) VALUES (${event.id}, ${event.type}, ${orderId}::uuid))`
     : sql``;
 
 const count = (res: unknown) =>
   Number((res as { rows: { n: number | string }[] }).rows[0]?.n ?? 0);
 
-export type ReleaseReason = "expired" | "canceled" | "payment_failed";
+export type ReleaseReason = "expired" | "canceled";
 
 /**
  * Closes a still-pending order and returns its reserved stock, in one
  * statement. The stock goes back only if this statement really moved the order
- * out of `pending`, so a release can happen at most once. Passing a Stripe
- * event makes the call fail with `duplicate` on a replayed event id.
+ * out of `pending`, so a release can happen at most once. Passing an event makes
+ * the call fail with `duplicate` on a replayed event id.
  */
 export async function releaseOrder(
   orderId: string,
   reason: ReleaseReason,
   event?: EventRef,
 ): Promise<{ released: boolean; duplicate: boolean }> {
-  const status = reason === "expired" ? "expired" : "canceled";
-  const paymentStatus = reason === "payment_failed" ? "failed" : "unpaid";
   try {
     const res = await db.execute(sql`
       WITH t AS (
         UPDATE orders
-        SET status = ${status}, payment_status = ${paymentStatus},
-            stock_released_at = now(), updated_at = now()
+        SET status = ${reason}, stock_released_at = now(), updated_at = now()
         WHERE id = ${orderId}::uuid AND status = 'pending'
         RETURNING id
       ), rel AS (
@@ -258,34 +281,33 @@ export async function releaseOrder(
     `);
     return { released: count(res) === 1, duplicate: false };
   } catch (err) {
-    if (hasConstraint(err, "stripe_events_pkey")) return { released: false, duplicate: true };
+    if (hasConstraint(err, "payment_events_pkey")) return { released: false, duplicate: true };
     throw err;
   }
 }
 
-/** What Stripe reports about a paid Checkout Session; see `lib/checkout.ts`. */
+/** What Razorpay reports about a captured payment; see `lib/checkout.ts`. */
 export type PaidFacts = {
   orderId: string;
-  sessionId: string;
-  paymentIntentId: string | null;
-  amountTotal: number | null;
-  currency: string | null;
-  shippingAddress: ShippingAddress | null;
+  razorpayOrderId: string;
+  paymentId: string;
+  amount: number; // minor units, as fetched from Razorpay
+  currency: string;
 };
 
 export type PaidResult =
   | "confirmed" // this call confirmed the order
   | "already_confirmed"
-  | "duplicate" // replayed Stripe event
+  | "duplicate" // replayed webhook event
   | "amount_mismatch" // flagged needs_review, stock kept, no refund
   | "late_payment" // paid after the order was released; flagged, needs refund
   | "unknown";
 
 /**
  * Confirms an order as paid, only if it is still pending, belongs to this
- * Checkout Session and Stripe's amount and currency equal the total we stored.
- * The caller must have verified the session with Stripe (signed webhook or a
- * server-side retrieve), never a browser redirect.
+ * Razorpay order and the captured amount and currency equal the total we
+ * stored. The caller must have verified the payment with Razorpay (signature
+ * check plus a server-side fetch, or a verified webhook), never a browser claim.
  */
 export async function markOrderPaid(facts: PaidFacts, event?: EventRef): Promise<PaidResult> {
   try {
@@ -293,26 +315,25 @@ export async function markOrderPaid(facts: PaidFacts, event?: EventRef): Promise
       WITH t AS (
         UPDATE orders
         SET status = 'confirmed', payment_status = 'paid', paid_at = now(),
-            stripe_payment_intent_id = ${facts.paymentIntentId},
-            shipping_address = ${facts.shippingAddress ? JSON.stringify(facts.shippingAddress) : null}::jsonb,
+            razorpay_payment_id = ${facts.paymentId},
             updated_at = now()
         WHERE id = ${facts.orderId}::uuid
           AND status = 'pending'
-          AND stripe_checkout_session_id = ${facts.sessionId}
-          AND total_cents = ${facts.amountTotal}
-          AND currency = ${facts.currency?.toLowerCase() ?? null}
+          AND razorpay_order_id = ${facts.razorpayOrderId}
+          AND total_cents = ${facts.amount}
+          AND currency = ${facts.currency.toLowerCase()}
         RETURNING id
       ) ${eventInsert(facts.orderId, event)}
       SELECT (SELECT count(*) FROM t)::int AS n
     `);
     if (count(res) === 1) return "confirmed";
   } catch (err) {
-    if (hasConstraint(err, "stripe_events_pkey")) return "duplicate";
+    if (hasConstraint(err, "payment_events_pkey")) return "duplicate";
     throw err;
   }
 
   const order = await findOrderById(facts.orderId);
-  if (!order || order.stripeCheckoutSessionId !== facts.sessionId) return "unknown";
+  if (!order || order.razorpayOrderId !== facts.razorpayOrderId) return "unknown";
   if (order.status === "confirmed") return "already_confirmed";
   if (order.status === "needs_review") return "amount_mismatch"; // already flagged
 
@@ -323,15 +344,120 @@ export async function markOrderPaid(facts: PaidFacts, event?: EventRef): Promise
       status: "needs_review",
       paymentStatus: "paid",
       paidAt: sql`coalesce(${orders.paidAt}, now())`,
-      stripePaymentIntentId: facts.paymentIntentId,
+      razorpayPaymentId: facts.paymentId,
     })
-    .where(and(eq(orders.id, facts.orderId), eq(orders.stripeCheckoutSessionId, facts.sessionId)));
+    .where(and(eq(orders.id, facts.orderId), eq(orders.razorpayOrderId, facts.razorpayOrderId)));
   return order.status === "pending" ? "amount_mismatch" : "late_payment";
 }
 
-export async function markOrderRefunded(orderId: string) {
+export async function markOrderRefunded(orderId: string, refundId: string | null) {
   await db
     .update(orders)
-    .set({ paymentStatus: "refunded" })
+    .set({ paymentStatus: "refunded", razorpayRefundId: refundId })
     .where(and(eq(orders.id, orderId), eq(orders.status, "needs_review")));
+}
+
+export type PaymentRecord = {
+  id: string;
+  orderId: string;
+  status: "created" | "authorized" | "captured" | "failed" | "refunded";
+  amountCents: number;
+  currency: string;
+  method: string | null;
+  errorCode: string | null;
+  errorDescription: string | null;
+};
+
+/**
+ * Records what Razorpay says about one payment attempt, and the event that said
+ * it, in one atomic batch. A replayed event fails the event insert and writes
+ * nothing. Returns `duplicate` in that case.
+ */
+export async function recordPaymentEvent(
+  event: { id: string; type: string },
+  orderId: string,
+  payment: PaymentRecord | null,
+): Promise<"recorded" | "duplicate"> {
+  // The event insert goes first: if it conflicts, the batch aborts before the
+  // payment row is touched.
+  const statements = [
+    db.insert(paymentEvents).values({ id: event.id, type: event.type, orderId }),
+    ...(payment
+      ? [
+          db
+            .insert(payments)
+            .values(payment)
+            .onConflictDoUpdate({
+              target: payments.id,
+              set: {
+                status: payment.status,
+                method: payment.method,
+                errorCode: payment.errorCode,
+                errorDescription: payment.errorDescription,
+              },
+            }),
+        ]
+      : []),
+  ];
+  try {
+    await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
+    return "recorded";
+  } catch (err) {
+    if (hasConstraint(err, "payment_events_pkey")) return "duplicate";
+    throw err;
+  }
+}
+
+/**
+ * Upserts a payment attempt without a webhook event (the verified callback
+ * path). Its state changes come from `markOrderPaid`.
+ */
+export async function upsertPayment(payment: PaymentRecord) {
+  await db
+    .insert(payments)
+    .values(payment)
+    .onConflictDoUpdate({
+      target: payments.id,
+      set: {
+        status: payment.status,
+        method: payment.method,
+        errorCode: payment.errorCode,
+        errorDescription: payment.errorDescription,
+      },
+    });
+}
+
+/** Refund issued outside our late-payment flow (e.g. from the Razorpay dashboard). */
+export async function markRefundedByPayment(
+  paymentId: string,
+  refundId: string | null,
+  event: { id: string; type: string },
+): Promise<"recorded" | "duplicate"> {
+  const orderRow = await db.query.orders.findFirst({
+    where: eq(orders.razorpayPaymentId, paymentId),
+    columns: { id: true },
+  });
+  if (!orderRow) return "recorded"; // not one of our orders; nothing to change
+  try {
+    await db.execute(sql`
+      WITH ev AS (
+        INSERT INTO payment_events (id, type, order_id)
+        VALUES (${event.id}, ${event.type}, ${orderRow.id}::uuid)
+      ), o AS (
+        UPDATE orders
+        SET payment_status = 'refunded', razorpay_refund_id = ${refundId}, updated_at = now()
+        WHERE id = ${orderRow.id}::uuid AND payment_status = 'paid'
+        RETURNING id
+      )
+      SELECT 1
+    `);
+    await db
+      .update(payments)
+      .set({ status: "refunded" })
+      .where(eq(payments.id, paymentId));
+    return "recorded";
+  } catch (err) {
+    if (hasConstraint(err, "payment_events_pkey")) return "duplicate";
+    throw err;
+  }
 }

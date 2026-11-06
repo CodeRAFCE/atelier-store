@@ -50,16 +50,17 @@ export function getStockState(stock: number): StockState {
   return { status: "in_stock", label: "In stock" };
 }
 
-/** Exact amount from integer cents (orders), unlike `formatPrice`'s whole dollars. */
-export const formatCents = (cents: number, currency = "usd") =>
-  new Intl.NumberFormat("en-US", {
+/** Exact amount from integer minor units (paise for INR), e.g. orders. */
+export const formatCents = (cents: number, currency = "inr") =>
+  new Intl.NumberFormat("en-IN", {
     style: "currency",
     currency: currency.toUpperCase(),
   }).format(cents / 100);
 
+/** Whole-rupee display price for catalogue and cart lines (value in rupees). */
 export const formatPrice = (value: number) =>
-  new Intl.NumberFormat("en-US", {
+  new Intl.NumberFormat("en-IN", {
     style: "currency",
-    currency: "USD",
+    currency: "INR",
     maximumFractionDigits: 0,
   }).format(value);

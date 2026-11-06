@@ -23,7 +23,7 @@ export function CartSummary({ subtotal, count, canCheckout }: { subtotal: number
           <dd>{formatPrice(subtotal)}</dd>
         </div>
       </dl>
-      <p className="text-xs text-muted">You&apos;ll enter your shipping address and pay securely with Stripe.</p>
+      <p className="text-xs text-muted">Pay securely by UPI, card or netbanking.</p>
       <CheckoutButton disabled={!canCheckout} />
     </section>
   );

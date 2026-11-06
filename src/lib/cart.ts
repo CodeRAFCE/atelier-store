@@ -22,7 +22,7 @@ export type CartLine = {
   href: string;
   image: ImageRef;
   color: string;
-  /** Current unit price in dollars. */
+  /** Current unit price in rupees. */
   unitPrice: number;
   /** Quantity after clamping to current stock (0 when sold out). */
   qty: number;
@@ -35,7 +35,7 @@ export type CartLine = {
 
 export type Cart = {
   lines: CartLine[];
-  /** Sum of line totals over available lines, in dollars. */
+  /** Sum of line totals over available lines, in rupees. */
   subtotal: number;
   /** Total units across available lines. */
   count: number;
