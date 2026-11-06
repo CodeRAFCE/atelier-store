@@ -45,7 +45,7 @@ Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
 
 ## Setup
 
-Copy `.env.example` to `.env.local` and set `DATABASE_URL` (Neon), `BETTER_AUTH_SECRET` (`npx @better-auth/cli secret`) and `BETTER_AUTH_URL`. `src/db/index.ts` throws at import if `DATABASE_URL` is missing.
+Copy `.env.example` to `.env.local` and set `DATABASE_URL` (Neon), `BETTER_AUTH_SECRET` (`npx @better-auth/cli secret`) and `BETTER_AUTH_URL`. `src/db/index.ts` throws at import if `DATABASE_URL` is missing, and `src/lib/auth.ts` throws if `BETTER_AUTH_SECRET` is missing or weak (checks in `src/lib/auth-secret.ts`; never relax them to get a build passing).
 
 ## Architecture
 
