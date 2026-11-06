@@ -1,4 +1,4 @@
-import { brand, footerLinks } from "@/lib/sample-data";
+import { brand, footerLinks } from "@/lib/site-content";
 import { NewsletterForm } from "./newsletter-form";
 
 export function SiteFooter() {

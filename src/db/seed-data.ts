@@ -1,135 +1,72 @@
-// Placeholder storefront content. Replace with database queries once the
-// product/collection schema exists.
+// Seed catalogue: the storefront's original placeholder products and
+// categories. Loaded into Postgres by `npm run db:seed`.
+
+import type { ImageRef } from "./schema";
 
 const unsplash = (id: string) => `https://images.unsplash.com/photo-${id}`;
-
-export type ImageRef = { src: string; alt: string };
-
-export type ProductSize = { label: string; stock: number };
-
-export type Product = {
-  /** URL slug; maps to /products/[slug]. */
-  id: string;
-  name: string;
-  category: string;
-  price: number;
-  color: string;
-  badge?: string;
-  /** Primary image, used on cards. */
-  image: ImageRef;
-  /** Full PDP gallery; first entry is `image`. */
-  gallery: ImageRef[];
-  /** Units available; for sized items this is the sum across sizes. */
-  stock: number;
-  sizes?: ProductSize[];
-  description: string;
-  details: string[];
-  href: string;
-};
-
-export type Collection = {
-  id: string;
-  eyebrow: string;
-  title: string;
-  description: string;
-  image: ImageRef;
-  href: string;
-};
-
-export type Category = {
-  id: string;
-  title: string;
-  image: ImageRef;
-  href: string;
-};
-
-export const brand = {
-  name: "Maison Lumière",
-};
-
-export const navigation = [
-  { label: "New In", href: "/#new-in" },
-  { label: "Women", href: "/#collections" },
-  { label: "Men", href: "/#collections" },
-  { label: "Handbags", href: "/#categories" },
-  { label: "Shoes", href: "/#categories" },
-  { label: "Jewelry", href: "/#categories" },
-];
-
-export const hero = {
-  eyebrow: "Autumn – Winter Collection",
-  title: "The Quiet Season",
-  description:
-    "Tailored layers, soft structure and colour drawn from the city at dusk.",
-  image: {
-    src: unsplash("1539109136881-3be0616acf4b"),
-    alt: "Woman in a pale blue overcoat standing in a historic city square",
-  },
-  primary: { label: "Discover the collection", href: "#collections" },
-  secondary: { label: "Shop new in", href: "/#new-in" },
-};
-
-export const collections: Collection[] = [
-  {
-    id: "women",
-    eyebrow: "Women",
-    title: "Romance, Reworked",
-    description: "Volume, texture and print in a modern register.",
-    image: {
-      src: unsplash("1581044777550-4cfa60707c03"),
-      alt: "Woman in a voluminous pink ruffled blouse in a wheat field",
-    },
-    href: "#new-in",
-  },
-  {
-    id: "men",
-    eyebrow: "Men",
-    title: "The New Tailoring",
-    description: "Relaxed shoulders and warm neutrals for every day.",
-    image: {
-      src: unsplash("1552374196-1ab2a1c593e8"),
-      alt: "Man in a camel blazer and cream trousers seated on a wooden stool",
-    },
-    href: "#new-in",
-  },
-];
-
-const LOW_STOCK_THRESHOLD = 3;
 
 /** Unsplash focal-point crop, used for close-up gallery shots. */
 const detailShot = (id: string, x: number, y: number, zoom: number) =>
   `${unsplash(id)}?fit=crop&crop=focalpoint&fp-x=${x}&fp-y=${y}&fp-z=${zoom}&w=1600&h=2000`;
 
-type ProductInput = Omit<Product, "href" | "image" | "gallery" | "stock"> & {
+export type SeedCategory = {
+  slug: string;
+  name: string;
+  image: ImageRef;
+};
+
+export type SeedProduct = {
+  slug: string;
+  name: string;
+  categorySlug: string;
+  /** Whole dollars. */
+  price: number;
+  color: string;
+  badge?: string;
+  images: ImageRef[];
+  /** `size: null` for one-size items. */
+  stock: { size: string | null; quantity: number }[];
+  description: string;
+  details: string[];
+};
+
+type ProductInput = Omit<SeedProduct, "slug" | "categorySlug" | "images" | "stock"> & {
+  id: string;
+  category: string;
   photo: string;
   alt: string;
   closeUps: { x: number; y: number; zoom: number; alt: string }[];
-  /** Total stock for one-size items; ignored when `sizes` is set. */
+  /** Stock for one-size items; ignored when `sizes` is set. */
   stock?: number;
+  sizes?: { label: string; stock: number }[];
 };
 
+const slugify = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+
 function defineProduct({
+  id,
+  category,
   photo,
   alt,
   closeUps,
   stock,
+  sizes,
   ...rest
-}: ProductInput): Product {
-  const image = { src: unsplash(photo), alt };
+}: ProductInput): SeedProduct {
   return {
     ...rest,
-    href: `/products/${rest.id}`,
-    image,
-    gallery: [
-      image,
+    slug: id,
+    categorySlug: slugify(category),
+    images: [
+      { src: unsplash(photo), alt },
       ...closeUps.map((c) => ({
         src: detailShot(photo, c.x, c.y, c.zoom),
         alt: c.alt,
       })),
     ],
-    stock: rest.sizes
-      ? rest.sizes.reduce((n, s) => n + s.stock, 0)
-      : (stock ?? 0),
+    stock: sizes
+      ? sizes.map((s) => ({ size: s.label, quantity: s.stock }))
+      : [{ size: null, quantity: stock ?? 0 }],
   };
 }
 
@@ -139,7 +76,7 @@ const apparelSizes = (stock: [number, number, number, number, number]) =>
     stock: stock[i],
   }));
 
-export const products: Product[] = [
+export const products: SeedProduct[] = [
   defineProduct({
     id: "wicker-top-handle",
     name: "Woven Top Handle Bag",
@@ -369,117 +306,37 @@ export const products: Product[] = [
   }),
 ];
 
-export type StockState = {
-  status: "in_stock" | "low_stock" | "sold_out";
-  label: string;
-};
-
-export function getStockState(stock: number): StockState {
-  if (stock <= 0) return { status: "sold_out", label: "Sold out" };
-  if (stock <= LOW_STOCK_THRESHOLD)
-    return { status: "low_stock", label: `Only ${stock} left` };
-  return { status: "in_stock", label: "In stock" };
-}
-
-export const getProduct = (id: string) => products.find((p) => p.id === id);
-
-/** Same-category products first, then the rest, excluding the current one. */
-export function getRelatedProducts(product: Product, count = 4) {
-  const others = products.filter((p) => p.id !== product.id);
-  return [
-    ...others.filter((p) => p.category === product.category),
-    ...others.filter((p) => p.category !== product.category),
-  ].slice(0, count);
-}
-
-export const editorial = {
-  eyebrow: "Evening",
-  title: "In Full Bloom",
-  description: "Fluid silhouettes in saturated red, made to move.",
-  image: {
-    src: unsplash("1595777457583-95e059d581b8"),
-    alt: "Woman twirling in a flowing red gown outside a stone building",
-  },
-  cta: { label: "Explore eveningwear", href: "/#new-in" },
-};
-
-export const categories: Category[] = [
+export const categories: SeedCategory[] = [
   {
-    id: "handbags",
-    title: "Handbags",
+    slug: "handbags",
+    name: "Handbags",
     image: {
       src: unsplash("1584917865442-de89df76afd3"),
       alt: "Glossy red top handle handbag on a plinth",
     },
-    href: "#",
   },
   {
-    id: "shoes",
-    title: "Shoes",
+    slug: "shoes",
+    name: "Shoes",
     image: {
       src: unsplash("1560769629-975ec94e6a86"),
       alt: "Pair of multicolour sneakers on white plinths",
     },
-    href: "#",
   },
   {
-    id: "jewelry",
-    title: "Jewelry",
+    slug: "jewelry",
+    name: "Jewelry",
     image: {
       src: unsplash("1606760227091-3dd870d97f1d"),
       alt: "Assorted silver and gold jewelry",
     },
-    href: "#",
   },
   {
-    id: "ready-to-wear",
-    title: "Ready-to-wear",
+    slug: "ready-to-wear",
+    name: "Ready-to-wear",
     image: {
       src: unsplash("1445205170230-053b83016050"),
       alt: "Rail of neutral toned garments in a boutique",
     },
-    href: "#",
   },
 ];
-
-export const services = [
-  {
-    title: "Complimentary Shipping",
-    description: "On all orders, delivered in signature packaging.",
-  },
-  {
-    title: "Returns & Exchanges",
-    description: "Free returns within 30 days of delivery.",
-  },
-  {
-    title: "Client Services",
-    description: "Advisors available seven days a week.",
-  },
-];
-
-export const footerLinks = [
-  {
-    title: "Client Services",
-    links: ["Contact Us", "Shipping", "Returns", "FAQ", "Track Your Order"],
-  },
-  {
-    title: "The House",
-    links: ["About", "Sustainability", "Careers", "Press"],
-  },
-  {
-    title: "Legal",
-    links: [
-      "Privacy Policy",
-      "Terms of Use",
-      "Cookie Settings",
-      "Accessibility",
-    ],
-  },
-];
-
-export const formatPrice = (value: number) =>
-  new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(value);

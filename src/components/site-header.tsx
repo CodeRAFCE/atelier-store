@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { brand, navigation } from "@/lib/sample-data";
+import { brand, navigation } from "@/lib/site-content";
 import { BagIcon, CloseIcon, MenuIcon, SearchIcon, UserIcon } from "./icons";
 
 export function SiteHeader() {

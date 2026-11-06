@@ -1,6 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
-import { formatPrice, getStockState, type Product } from "@/lib/sample-data";
+import { formatPrice, getStockState, type Product } from "@/lib/catalog";
 import { HeartIcon } from "./icons";
 
 const sizes = "(min-width: 1280px) 25vw, (min-width: 768px) 33vw, 50vw";

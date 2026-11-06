@@ -6,20 +6,21 @@ import { ProductCard } from "@/components/product-card";
 import { ProductGallery } from "@/components/product-gallery";
 import { ProductPurchase } from "@/components/product-purchase";
 import {
-  formatPrice,
-  getProduct,
+  getProductBySlug,
+  getProductSlugs,
   getRelatedProducts,
-  products,
-} from "@/lib/sample-data";
+} from "@/db/queries";
+import { formatPrice } from "@/lib/catalog";
 
-export function generateStaticParams() {
-  return products.map((p) => ({ slug: p.id }));
+export async function generateStaticParams() {
+  const slugs = await getProductSlugs();
+  return slugs.map((slug) => ({ slug }));
 }
 
 export async function generateMetadata({
   params,
 }: PageProps<"/products/[slug]">): Promise<Metadata> {
-  const product = getProduct((await params).slug);
+  const product = await getProductBySlug((await params).slug);
   if (!product) return {};
   return {
     title: product.name,
@@ -40,10 +41,10 @@ export default function ProductPage({ params }: PageProps<"/products/[slug]">) {
 }
 
 async function ProductDetail({ params }: Pick<PageProps<"/products/[slug]">, "params">) {
-  const product = getProduct((await params).slug);
+  const product = await getProductBySlug((await params).slug);
   if (!product) notFound();
 
-  const related = getRelatedProducts(product);
+  const related = await getRelatedProducts(product.id, product.categorySlug);
 
   return (
     <>

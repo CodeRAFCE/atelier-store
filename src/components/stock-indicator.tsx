@@ -1,4 +1,4 @@
-import type { StockState } from "@/lib/sample-data";
+import type { StockState } from "@/lib/catalog";
 
 const dot: Record<StockState["status"], string> = {
   in_stock: "bg-success",

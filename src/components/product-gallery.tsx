@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useRef, useState } from "react";
-import type { ImageRef } from "@/lib/sample-data";
+import type { ImageRef } from "@/lib/catalog";
 
 /**
  * Mobile/tablet: full-width swipeable carousel with position indicator.

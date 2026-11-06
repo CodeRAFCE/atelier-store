@@ -1,16 +1,15 @@
 import Image from "next/image";
 import { ArrowRightIcon } from "@/components/icons";
 import { ProductCard } from "@/components/product-card";
-import {
-  categories,
-  collections,
-  editorial,
-  hero,
-  products,
-  services,
-} from "@/lib/sample-data";
+import { getCategories, getProducts } from "@/db/queries";
+import { collections, editorial, hero, services } from "@/lib/site-content";
 
-export default function Home() {
+export default async function Home() {
+  const [products, categories] = await Promise.all([
+    getProducts(),
+    getCategories(),
+  ]);
+
   return (
     <>
         {/* Hero */}

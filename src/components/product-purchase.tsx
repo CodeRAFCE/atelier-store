@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { getStockState, type ProductSize } from "@/lib/sample-data";
+import { getStockState, type ProductSize } from "@/lib/catalog";
 import { HeartIcon } from "./icons";
 import { StockIndicator } from "./stock-indicator";
 

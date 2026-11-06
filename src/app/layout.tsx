@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter, Cormorant_Garamond } from "next/font/google";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
-import { brand } from "@/lib/sample-data";
+import { brand } from "@/lib/site-content";
 import "./globals.css";
 
 const inter = Inter({
