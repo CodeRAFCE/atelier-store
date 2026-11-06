@@ -57,7 +57,10 @@ async function ProductDetail({ params }: Pick<PageProps<"/products/[slug]">, "pa
           </li>
           <li aria-hidden="true">/</li>
           <li>
-            <Link href="/#categories" className="hover:text-foreground">
+            <Link
+              href={`/categories/${product.categorySlug}`}
+              className="hover:text-foreground"
+            >
               {product.category}
             </Link>
           </li>

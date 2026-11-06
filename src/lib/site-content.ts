@@ -19,12 +19,12 @@ export const brand = {
 };
 
 export const navigation = [
-  { label: "New In", href: "/#new-in" },
+  { label: "New In", href: "/new-arrivals" },
   { label: "Women", href: "/#collections" },
   { label: "Men", href: "/#collections" },
-  { label: "Handbags", href: "/#categories" },
-  { label: "Shoes", href: "/#categories" },
-  { label: "Jewelry", href: "/#categories" },
+  { label: "Handbags", href: "/categories/handbags" },
+  { label: "Shoes", href: "/categories/shoes" },
+  { label: "Jewelry", href: "/categories/jewelry" },
 ];
 
 export const hero = {
@@ -37,7 +37,7 @@ export const hero = {
     alt: "Woman in a pale blue overcoat standing in a historic city square",
   },
   primary: { label: "Discover the collection", href: "#collections" },
-  secondary: { label: "Shop new in", href: "/#new-in" },
+  secondary: { label: "Shop new in", href: "/new-arrivals" },
 };
 
 export const collections: Collection[] = [
