@@ -170,6 +170,24 @@ async function closeOpenOrder(
   return "closed";
 }
 
+/** Orders handled per opportunistic sweep: each one costs a Razorpay call. */
+const LAZY_SWEEP_LIMIT = 5;
+
+/**
+ * Opportunistic expiry for request paths (checkout, add to bag), because the
+ * scheduled sweeper only runs once a day on Vercel Free. Never throws: a failed
+ * sweep must not break the customer's action. Returns how many orders were
+ * released, so the caller can invalidate the `products` cache tag.
+ */
+export async function sweepLapsedReservations(): Promise<number> {
+  try {
+    return (await expireStaleOrders(LAZY_SWEEP_LIMIT)).released;
+  } catch (err) {
+    console.error("Lazy reservation sweep failed", err);
+    return 0;
+  }
+}
+
 export type BeginCheckoutResult =
   | {
       ok: true;
@@ -206,6 +224,10 @@ export async function beginCheckout(
       return { ok: false, message: "We couldn't close your previous checkout. Please try again." };
     }
   }
+
+  // The daily cron is too slow to free abandoned reservations (Vercel Free), so
+  // release other customers' lapsed ones now, or this order could fail as sold out.
+  await sweepLapsedReservations();
 
   const created = await createPendingOrder(user, items, address);
   if (!created.ok) return { ok: false, message: created.message };
@@ -316,8 +338,10 @@ export async function applyWebhookEvent(event: {
  * restocks them. Each one goes through `closeOpenOrder`, so a payment that
  * landed in the meantime still wins.
  */
-export async function expireStaleOrders(): Promise<{ checked: number; released: number }> {
-  const stale = await findExpiredPendingOrders();
+export async function expireStaleOrders(
+  limit = 50,
+): Promise<{ checked: number; released: number }> {
+  const stale = await findExpiredPendingOrders(limit);
   let released = 0;
   for (const order of stale) {
     const outcome = await closeOpenOrder(order, "expired");

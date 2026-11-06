@@ -5,7 +5,9 @@
 // Prices are never accepted from the client; the cart page reads them fresh.
 // Setting the cookie re-renders the current route (header count, cart page).
 
+import { updateTag } from "next/cache";
 import { getStockForLine } from "@/db/cart";
+import { sweepLapsedReservations } from "@/lib/checkout";
 import {
   lineKey,
   MAX_LINES,
@@ -36,6 +38,10 @@ export async function addToCart(
   const line = parseLine(slug, size);
   if (!line || !isInt(qty) || qty < 1 || qty > MAX_QTY)
     return fail("Please choose a valid size and quantity.");
+
+  // Abandoned checkouts hold stock until swept; free lapsed ones before judging
+  // "sold out" (the scheduled sweeper only runs daily).
+  if ((await sweepLapsedReservations()) > 0) updateTag("products");
 
   const stock = await getStockForLine(line.slug, line.size);
   if (!stock) return unavailable;

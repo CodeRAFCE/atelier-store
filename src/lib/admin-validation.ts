@@ -33,6 +33,8 @@ export type ProductInput = {
 
 export const MAX_STOCK = 100_000;
 const MAX_PRICE_RUPEES = 10_000_000;
+/** Razorpay rejects orders under 100 paise, so no product may cost less. */
+const MIN_PRICE_RUPEES = 1;
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
@@ -71,6 +73,7 @@ export function parsePriceCents(v: unknown, field = "price"): Parsed<number> {
   const raw = typeof v === "number" ? String(v) : typeof v === "string" ? v.trim() : "";
   if (!/^\d+(\.\d{1,2})?$/.test(raw)) return fail("Enter a price like 1499 or 1499.50.", field);
   const rupees = Number(raw);
+  if (rupees < MIN_PRICE_RUPEES) return fail("The price must be at least ₹1.", field);
   if (rupees > MAX_PRICE_RUPEES) return fail("That price is too high.", field);
   return { ok: true, value: Math.round(rupees * 100) };
 }

@@ -1,6 +1,7 @@
 "use server";
 
 import { updateTag } from "next/cache";
+import { getCart } from "@/db/cart";
 import { writeCart, readCart } from "@/lib/cart-cookie";
 import { parseAddress } from "@/lib/address";
 import { beginCheckout, cancelCheckout, confirmPayment } from "@/lib/checkout";
@@ -30,9 +31,17 @@ export async function startCheckout(input: unknown): Promise<StartCheckoutResult
   const address = parseAddress(input);
   if (!address.ok) return { ok: false, message: address.message };
 
+  // Check out exactly what the bag page shows: unknown products and sold-out
+  // lines are dropped and quantities are clamped to current stock. Prices and
+  // stock are still re-read, and enforced atomically, in createPendingOrder.
+  const cart = await getCart(await readCart());
+  const items = cart.lines
+    .filter((l) => l.qty > 0)
+    .map((l) => ({ slug: l.slug, size: l.size, qty: l.qty }));
+
   const result = await beginCheckout(
     { id: user.id, email: user.email },
-    await readCart(),
+    items,
     address.address,
   );
 

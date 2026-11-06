@@ -56,9 +56,21 @@ export type PendingOrder = {
 
 export type CreateOrderResult =
   | { ok: true; order: PendingOrder }
-  | { ok: false; code: "empty" | "unavailable" | "sold_out" | "open_order"; message: string };
+  | {
+      ok: false;
+      code: "empty" | "unavailable" | "sold_out" | "open_order" | "too_large";
+      message: string;
+    };
 
 export const CURRENCY = "inr";
+
+/**
+ * Largest order total we accept, in paise. Keeps `subtotal_cents`,
+ * `total_cents` and `line_total_cents` safely inside Postgres `integer`
+ * (2,147,483,647); per-product price limits alone can't guarantee that once
+ * multiplied by quantity and summed over lines.
+ */
+export const MAX_ORDER_CENTS = 2_000_000_000;
 
 /**
  * Re-reads price and stock from Postgres, then in one atomic batch inserts the
@@ -113,6 +125,13 @@ export async function createPendingOrder(
   }
 
   const subtotalCents = lines.reduce((n, l) => n + l.unitPriceCents * l.quantity, 0);
+  if (subtotalCents > MAX_ORDER_CENTS) {
+    return {
+      ok: false,
+      code: "too_large",
+      message: "This order is too large to process online. Please reduce the quantities.",
+    };
+  }
   const id = randomUUID();
   const expiresAt = new Date(Date.now() + CHECKOUT_TTL_MS);
 
