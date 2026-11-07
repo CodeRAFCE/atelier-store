@@ -2,8 +2,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 import { AdminHeader, adminLoading } from "@/components/admin/admin-header";
+import { Pagination } from "@/components/ui/pagination";
 import { adminListProducts } from "@/db/admin";
 import { formatCents } from "@/lib/catalog";
+import { paginate, parsePage } from "@/lib/pagination";
 import { requireAdmin } from "@/lib/session";
 
 export const metadata: Metadata = {
@@ -11,17 +13,23 @@ export const metadata: Metadata = {
   robots: { index: false },
 };
 
-export default function Page() {
+export default function Page({ searchParams }: PageProps<"/admin/products">) {
   return (
     <Suspense fallback={adminLoading}>
-      <Content />
+      <Content searchParams={searchParams} />
     </Suspense>
   );
 }
 
-async function Content() {
+async function Content({
+  searchParams,
+}: Pick<PageProps<"/admin/products">, "searchParams">) {
   await requireAdmin("/admin/products");
-  const products = await adminListProducts();
+  const all = await adminListProducts();
+  const { items: products, ...pageInfo } = paginate(
+    all,
+    parsePage((await searchParams).page),
+  );
 
   return (
     <div className="stack gap-8">
@@ -36,6 +44,7 @@ async function Content() {
       {products.length === 0 ? (
         <p className="text-sm text-muted">No products yet.</p>
       ) : (
+        <>
         <div className="overflow-x-auto">
           <table className="w-full min-w-160 text-left text-sm">
             <thead>
@@ -71,6 +80,8 @@ async function Content() {
             </tbody>
           </table>
         </div>
+        <Pagination basePath="/admin/products" label="Product pages" {...pageInfo} />
+        </>
       )}
     </div>
   );

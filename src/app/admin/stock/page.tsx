@@ -3,8 +3,10 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { AdminHeader, adminLoading } from "@/components/admin/admin-header";
 import { StockTable } from "@/components/admin/stock-table";
+import { Pagination } from "@/components/ui/pagination";
 import { adminListStock } from "@/db/admin";
 import { getStockState } from "@/lib/catalog";
+import { paginate, parsePage } from "@/lib/pagination";
 import { requireAdmin } from "@/lib/session";
 
 export const metadata: Metadata = {
@@ -37,12 +39,14 @@ async function Content({
   searchParams,
 }: Pick<PageProps<"/admin/stock">, "searchParams">) {
   await requireAdmin("/admin/stock");
-  const filter = readFilter((await searchParams).filter);
+  const sp = await searchParams;
+  const filter = readFilter(sp.filter);
   const all = await adminListStock();
-  const rows = all.filter((r) => {
+  const filtered = all.filter((r) => {
     const s = getStockState(r.quantity).status;
     return filter === "low" ? s === "low_stock" : filter === "out" ? s === "sold_out" : true;
   });
+  const { items: rows, ...pageInfo } = paginate(filtered, parsePage(sp.page));
 
   return (
     <div className="stack gap-8">
@@ -66,7 +70,15 @@ async function Content({
       {rows.length === 0 ? (
         <p className="text-sm text-muted">Nothing matches this filter.</p>
       ) : (
-        <StockTable rows={rows} />
+        <>
+          <StockTable rows={rows} />
+          <Pagination
+            basePath="/admin/stock"
+            params={{ filter: filter === "all" ? undefined : filter }}
+            label="Stock pages"
+            {...pageInfo}
+          />
+        </>
       )}
     </div>
   );
